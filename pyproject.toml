@@ -16,7 +16,7 @@
 name = "dora-openarm-ker"
 version = "1.0.0"
 authors = [{ name = "Enactic, Inc." }]
-description = "dora-rs node that outputs information from OpenArm KER"
+description = "dora-rs node for leader OpenArm KER"
 license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.10"
