@@ -70,9 +70,6 @@ def main():
         left_radian = np.deg2rad(left_position)
         left_follower_position = left_mapper.map(left_radian)
 
-        right_chain_encoders = m5_port.get_chain_encoder()
-        right_chain_buttons = m5_port.get_chain_encoder_button()
-
         joystick_x = m5_port.get_joystick_x()
         joystick_y = m5_port.get_joystick_y()
         joystick_button = m5_port.get_joystick_button()
@@ -87,14 +84,6 @@ def main():
         node.send_output(
             "left_follower_position",
             pa.array(left_follower_position, type=pa.float32()),
-        )
-
-        node.send_output(
-            "chain_encoders", pa.array([right_chain_encoders], type=pa.int32())
-        )
-
-        node.send_output(
-            "chain_buttons", pa.array([right_chain_buttons], type=pa.int32())
         )
 
         node.send_output("joystick_x", pa.array([joystick_x], type=pa.float32()))
