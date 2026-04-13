@@ -62,8 +62,8 @@ def main():
 
         # Main process
         m5_port.fetch_present_status_bulk()
-        right_position = m5_port.present_positions[:8]
-        left_position = m5_port.present_positions[8:16]
+        right_position = m5_port.present_position[:8]
+        left_position = m5_port.present_position[8:16]
 
         right_radian = np.deg2rad(right_position)
         right_follower_position = right_mapper.map(right_radian)
