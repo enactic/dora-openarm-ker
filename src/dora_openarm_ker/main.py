@@ -39,9 +39,15 @@ def main():
         help="The serial port device path (e.g. /dev/ttyACM0)",
         type=str,
     )
+    parser.add_argument(
+        "--mode",
+        default="binary",
+        help="The mode of the KER (binary or decimal)",
+        type=str,
+    )
     args = parser.parse_args()
 
-    m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode="binary")
+    m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
     right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
     right_mapper = openarm_ker.mapper.Mapper(
         leader_joint_names=right_leader_joint_names,
