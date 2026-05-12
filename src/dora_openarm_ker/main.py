@@ -42,8 +42,9 @@ def main():
     parser.add_argument(
         "--mode",
         default="binary",
-        help="The mode of the KER (binary or decimal)",
+        help="The mode of the KER (binary or json)",
         type=str,
+        choices=["binary", "json"],
     )
     args = parser.parse_args()
 
