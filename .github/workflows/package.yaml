@@ -18,6 +18,7 @@ on:
     branches:
       - '**'
       - '!dependabot/**'
+      - '!copilot/**'
     tags:
       - '**'
   pull_request:
