@@ -22,15 +22,24 @@ import os
 import pathlib
 import pyarrow as pa
 import numpy as np
+import shlex
+import sys
 
 
 def _device_permission_error_message(device, exc):
     """Build a user-facing message for serial-device permission errors."""
+    if not sys.platform.startswith("linux"):
+        return (
+            f"Cannot access {device}. Check that the device exists and that your user has "
+            f"read/write permission for it. Original error: {exc}"
+        )
+
+    quoted_device = shlex.quote(device)
     return (
         f"Cannot access {device}. On Linux this device is usually owned by the 'dialout' group. "
         "Add your user to that group with: sudo usermod -aG dialout $(whoami), "
         "then sign out and back in. For a temporary per-device fix, run: "
-        f"sudo chgrp dialout {device} && sudo chmod g+rw {device}. "
+        f"sudo chgrp dialout -- {quoted_device} && sudo chmod g+rw -- {quoted_device}. "
         "For persistent access, create a udev rule for the device. "
         f"Original error: {exc}"
     )
