@@ -14,4 +14,7 @@
 
 *.egg-info
 /build/
-**/__pycache__/*
+__pycache__/
+*.tar.gz
+*.zip
+dist/

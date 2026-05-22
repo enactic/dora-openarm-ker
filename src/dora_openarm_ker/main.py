@@ -17,6 +17,7 @@
 import argparse
 import dora
 import openarm_ker
+import os
 import pathlib
 import pyarrow as pa
 import numpy as np
@@ -48,7 +49,24 @@ def main():
     )
     args = parser.parse_args()
 
-    m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
+    try:
+        m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
+    except PermissionError as exc:
+        raise SystemExit(
+            f"Permission denied opening {args.device}. On Linux this device is usually owned by the 'dialout' group. "
+            "Add your user to that group with 'sudo usermod -aG dialout $USER', then sign out and back in, "
+            f"or temporarily run 'sudo chmod a+rw {args.device}'. Original error: {exc}"
+        ) from exc
+    except OSError as exc:
+        if exc.errno == 13 or (
+            args.device.startswith("/dev/") and not os.access(args.device, os.R_OK | os.W_OK)
+        ):
+            raise SystemExit(
+                f"Cannot access {args.device}. On Linux this device is usually owned by the 'dialout' group. "
+                "Add your user to that group with 'sudo usermod -aG dialout $USER', then sign out and back in, "
+                f"or temporarily run 'sudo chmod a+rw {args.device}'. Original error: {exc}"
+            ) from exc
+        raise
     right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
     mapper_right = openarm_ker.mapper.Mapper(
         leader_joint_names=right_leader_joint_names,
