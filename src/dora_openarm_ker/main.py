@@ -63,7 +63,9 @@ def main():
     args = parser.parse_args()
 
     try:
-        m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
+        m5_port = openarm_ker.m5_port.M5Port(
+            args.device, num_sensors=16, mode=args.mode
+        )
     except PermissionError as exc:
         raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
     except OSError as exc:
@@ -73,7 +75,9 @@ def main():
             and os.path.exists(args.device)
             and not os.access(args.device, os.R_OK | os.W_OK)
         ):
-            raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
+            raise SystemExit(
+                _device_permission_error_message(args.device, exc)
+            ) from exc
         raise
     right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
     mapper_right = openarm_ker.mapper.Mapper(
