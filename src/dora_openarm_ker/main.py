@@ -15,12 +15,25 @@
 """dora-rs node for leader OpenArm KER."""
 
 import argparse
+import errno
 import dora
 import openarm_ker
 import os
 import pathlib
 import pyarrow as pa
 import numpy as np
+
+
+def _device_permission_error_message(device, exc):
+    """Build a user-facing message for serial-device permission errors."""
+    return (
+        f"Cannot access {device}. On Linux this device is usually owned by the 'dialout' group. "
+        "Add your user to that group with: sudo usermod -aG dialout $(whoami), "
+        "then sign out and back in. For a temporary per-device fix, run: "
+        f"sudo chgrp dialout {device} && sudo chmod g+rw {device}. "
+        "For persistent access, create a udev rule for the device. "
+        f"Original error: {exc}"
+    )
 
 
 def main():
@@ -52,20 +65,15 @@ def main():
     try:
         m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
     except PermissionError as exc:
-        raise SystemExit(
-            f"Permission denied opening {args.device}. On Linux this device is usually owned by the 'dialout' group. "
-            "Add your user to that group with 'sudo usermod -aG dialout $USER', then sign out and back in, "
-            f"or temporarily run 'sudo chmod a+rw {args.device}'. Original error: {exc}"
-        ) from exc
+        raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
     except OSError as exc:
-        if exc.errno == 13 or (
-            args.device.startswith("/dev/") and not os.access(args.device, os.R_OK | os.W_OK)
+        if exc.errno in (errno.EACCES, errno.EPERM) or (
+            exc.errno is None
+            and args.device.startswith("/dev/")
+            and os.path.exists(args.device)
+            and not os.access(args.device, os.R_OK | os.W_OK)
         ):
-            raise SystemExit(
-                f"Cannot access {args.device}. On Linux this device is usually owned by the 'dialout' group. "
-                "Add your user to that group with 'sudo usermod -aG dialout $USER', then sign out and back in, "
-                f"or temporarily run 'sudo chmod a+rw {args.device}'. Original error: {exc}"
-            ) from exc
+            raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
         raise
     right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
     mapper_right = openarm_ker.mapper.Mapper(
