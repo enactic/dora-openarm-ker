@@ -36,10 +36,13 @@ def _device_permission_error_message(device, exc):
 
     quoted_device = shlex.quote(device)
     return (
-        f"Cannot access {device}. On Linux this device is usually owned by the 'dialout' group. "
-        "Add your user to that group with: sudo usermod -aG dialout $(whoami), "
-        "then sign out and back in. For a temporary per-device fix, run: "
-        f"sudo chgrp dialout -- {quoted_device} && sudo chmod g+rw -- {quoted_device}. "
+        f"Cannot access {device}. On Linux this device is usually owned by the "
+        "'dialout' group.\n"
+        "Add your user to that group with:\n"
+        "  sudo usermod -aG dialout $(whoami)\n"
+        "Then sign out and back in. For a temporary per-device fix, run:\n"
+        f"  sudo chgrp dialout -- {quoted_device} && sudo chmod g+rw -- "
+        f"{quoted_device}\n"
         "For persistent access, create a udev rule for the device. "
         f"Original error: {exc}"
     )
