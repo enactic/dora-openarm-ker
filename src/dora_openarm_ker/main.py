@@ -15,11 +15,37 @@
 """dora-rs node for leader OpenArm KER."""
 
 import argparse
+import errno
 import dora
 import openarm_ker
+import os
 import pathlib
 import pyarrow as pa
 import numpy as np
+import shlex
+import sys
+
+
+def _device_permission_error_message(device, exc):
+    """Build a user-facing message for serial-device permission errors."""
+    if not sys.platform.startswith("linux"):
+        return (
+            f"Cannot access {device}. Check that the device exists and that your user has "
+            f"read/write permission for it. Original error: {exc}"
+        )
+
+    quoted_device = shlex.quote(device)
+    return (
+        f"Cannot access {device}. On Linux this device is usually owned by the "
+        "'dialout' group.\n"
+        "Add your user to that group with:\n"
+        "  sudo usermod -aG dialout $(whoami)\n"
+        "Then sign out and back in. For a temporary per-device fix, run:\n"
+        f"  sudo chgrp dialout -- {quoted_device} && sudo chmod g+rw -- "
+        f"{quoted_device}\n"
+        "For persistent access, create a udev rule for the device. "
+        f"Original error: {exc}"
+    )
 
 
 def main():
@@ -48,7 +74,23 @@ def main():
     )
     args = parser.parse_args()
 
-    m5_port = openarm_ker.m5_port.M5Port(args.device, num_sensors=16, mode=args.mode)
+    try:
+        m5_port = openarm_ker.m5_port.M5Port(
+            args.device, num_sensors=16, mode=args.mode
+        )
+    except PermissionError as exc:
+        raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EPERM) or (
+            exc.errno is None
+            and args.device.startswith("/dev/")
+            and os.path.exists(args.device)
+            and not os.access(args.device, os.R_OK | os.W_OK)
+        ):
+            raise SystemExit(
+                _device_permission_error_message(args.device, exc)
+            ) from exc
+        raise
     right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
     mapper_right = openarm_ker.mapper.Mapper(
         leader_joint_names=right_leader_joint_names,
