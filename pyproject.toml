@@ -27,7 +27,7 @@ dependencies = [
     "numpy>=2.4.4",
     "pyarrow>=23.0.1",
     "scipy>=1.17.1",
-    "openarm-ker @ git+https://github.com/tokirobot/openarm_ker.git@yt/release_ver",
+    "openarm-ker @ git+https://github.com/enactic/openarm_ker.git",
 ]
 
 
