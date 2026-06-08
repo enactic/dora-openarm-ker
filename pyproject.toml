@@ -19,9 +19,17 @@ authors = [{ name = "Enactic, Inc." }]
 description = "dora-rs node for leader OpenArm KER"
 license = { text = "Apache-2.0" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
-dependencies = ["dora-rs >= 0.3.9", "openarm-ker"]
+dependencies = [
+    "dora-rs==0.5.0",
+    "dora-rs-cli==0.5.0",
+    "numpy>=2.4.4",
+    "pyarrow>=23.0.1",
+    "scipy>=1.17.1",
+    "openarm-ker @ git+https://github.com/tokirobot/openarm_ker.git@yt/release_ver",
+]
+
 
 [dependency-groups]
 dev = [
