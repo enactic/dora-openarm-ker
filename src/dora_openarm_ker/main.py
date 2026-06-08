@@ -15,133 +15,169 @@
 """dora-rs node for leader OpenArm KER."""
 
 import argparse
-import errno
+import time
 import dora
-import openarm_ker
-import os
-import pathlib
 import pyarrow as pa
 import numpy as np
-import shlex
-import sys
+from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 
 
-def _device_permission_error_message(device, exc):
-    """Build a user-facing message for serial-device permission errors."""
-    if not sys.platform.startswith("linux"):
-        return (
-            f"Cannot access {device}. Check that the device exists and that your user has "
-            f"read/write permission for it. Original error: {exc}"
+# ==============================================================================
+# Filters & Math Utilities
+# ==============================================================================
+def map_range(x, in_min, in_max, out_min, out_max):
+    """Map a value from one range to another, with clipping."""
+    if in_max == in_min:
+        return out_min
+    x = max(min(x, in_max), in_min) if in_min < in_max else max(min(x, in_min), in_max)
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
+
+
+class OnlineHampelFilter:
+    """Real-time Hampel filter to eliminate hardware spikes with zero phase delay."""
+
+    def __init__(self, window_size=5, n_sigmas=3.0, min_threshold=5.0):
+        """Initialize the Hampel filter parameters and historical buffer."""
+        self.window_size = window_size
+        self.n_sigmas = n_sigmas
+        self.min_threshold = min_threshold
+        self.scale_factor = 1.4826
+        self.history = None
+
+    def process(self, current_values: list[float]) -> list[float]:
+        """Process streaming multi-channel data to detect and suppress sudden spikes."""
+        curr = np.array(current_values, dtype=np.float64)
+
+        if self.history is None:
+            self.history = np.tile(curr, (self.window_size, 1))
+            return current_values
+
+        medians = np.median(self.history, axis=0)
+        mads = np.median(np.abs(self.history - medians), axis=0)
+
+        thresholds = np.maximum(
+            self.n_sigmas * self.scale_factor * mads, self.min_threshold
         )
 
-    quoted_device = shlex.quote(device)
-    return (
-        f"Cannot access {device}. On Linux this device is usually owned by the "
-        "'dialout' group.\n"
-        "Add your user to that group with:\n"
-        "  sudo usermod -aG dialout $(whoami)\n"
-        "Then sign out and back in. For a temporary per-device fix, run:\n"
-        f"  sudo chgrp dialout -- {quoted_device} && sudo chmod g+rw -- "
-        f"{quoted_device}\n"
-        "For persistent access, create a udev rule for the device. "
-        f"Original error: {exc}"
-    )
+        is_outlier = np.abs(curr - medians) > thresholds
+        if np.any(is_outlier):
+            for idx in np.where(is_outlier)[0]:
+                print(
+                    f"[KER Filter] Spike suppressed at J{idx + 1}! Raw: {curr[idx]:.2f} -> Fixed: {medians[idx]:.2f}"
+                )
+
+        filtered_values = np.where(is_outlier, medians, curr)
+
+        self.history[:-1] = self.history[1:]
+        self.history[-1] = filtered_values
+
+        return filtered_values.tolist()
 
 
+# ==============================================================================
+# Core Processor
+# ==============================================================================
+class KerPoseProcessor:
+    """Processes raw angles and applies filters without modifying the physical scale."""
+
+    def __init__(self, use_hampel: bool = False):
+        """Initialize the pose processor with an optional Hampel filter."""
+        self.hampel = (
+            OnlineHampelFilter(window_size=5, n_sigmas=3.0, min_threshold=5.0)
+            if use_hampel
+            else None
+        )
+
+    def process(self, raw_angles: list[float]) -> tuple[list[float], list[float]]:
+        """Filter raw encoder degrees and transform them into left/right radian lists."""
+        filtered = self.hampel.process(raw_angles) if self.hampel else raw_angles
+
+        grip_r_deg = map_range(filtered[7], 0.0, -60.0, -60.0, 10.0)
+        grip_l_deg = map_range(filtered[15], 0.0, 60.0, 60.0, -10.0)
+
+        pos_right = np.deg2rad(filtered[:7]).tolist()
+        pos_right.append(np.deg2rad(grip_r_deg))
+
+        pos_left = np.deg2rad(filtered[8:15]).tolist()
+        pos_left.append(np.deg2rad(grip_l_deg))
+
+        return pos_right, pos_left
+
+
+# ==============================================================================
+# Main Node App
+# ==============================================================================
 def main():
     """Act OpenArm KER as a leader of OpenArm."""
-    parser = argparse.ArgumentParser(
-        description="Act OpenArm KER as a leader of OpenArm"
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="The configuration file how to map leader position to follower position",
-        type=pathlib.Path,
-    )
-    parser.add_argument(
-        "--device",
-        default="/dev/ttyACM0",
-        help="The serial port device path (e.g. /dev/ttyACM0)",
-        type=str,
-    )
-    parser.add_argument(
-        "--mode",
-        default="binary",
-        help="The mode of the KER (binary or json)",
-        type=str,
-        choices=["binary", "json"],
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--hampel", action="store_true", help="Enable Hampel filter")
     args = parser.parse_args()
 
-    try:
-        m5_port = openarm_ker.m5_port.M5Port(
-            args.device, num_sensors=16, mode=args.mode
-        )
-    except PermissionError as exc:
-        raise SystemExit(_device_permission_error_message(args.device, exc)) from exc
-    except OSError as exc:
-        if exc.errno in (errno.EACCES, errno.EPERM) or (
-            exc.errno is None
-            and args.device.startswith("/dev/")
-            and os.path.exists(args.device)
-            and not os.access(args.device, os.R_OK | os.W_OK)
-        ):
-            raise SystemExit(
-                _device_permission_error_message(args.device, exc)
-            ) from exc
-        raise
-    right_leader_joint_names = [f"right_arm_joint{i}" for i in range(1, 9)]
-    mapper_right = openarm_ker.mapper.Mapper(
-        leader_joint_names=right_leader_joint_names,
-        mapping_key="right_arm_mappings",
-        mappingyaml_path=args.config,
-    )
-    left_leader_joint_names = [f"left_arm_joint{i}" for i in range(1, 9)]
-    mapper_left = openarm_ker.mapper.Mapper(
-        leader_joint_names=left_leader_joint_names,
-        mapping_key="left_arm_mappings",
-        mappingyaml_path=args.config,
-    )
+    print("Connecting to KER device...")
+    stream = KERStream()
+    stream.connect()
+    stream.send_command(CMD_STREAM)
 
+    print("\n=== Verified Device Metadata ===")
+    print(f" Hardware : {stream.metadata.get('hw')}")
+    print(f" Firmware : {stream.metadata.get('fw')}")
+    print(f" Updated  : {stream.metadata.get('updated')}")
+    print("================================\n")
+
+    print("Initializing dora-rs node...")
     node = dora.Node()
-    for event in node:
-        if event["type"] != "INPUT":
-            continue
+    processor = KerPoseProcessor(use_hampel=args.hampel)
 
-        # Main process
-        m5_port.fetch_present_status_bulk()
-        position_right = m5_port.present_position[:8]
-        position_left = m5_port.present_position[8:16]
+    print("KER Leader Node Running successfully.\n")
 
-        radian_right = np.deg2rad(position_right)
-        follower_position_right = mapper_right.map(radian_right)
-        radian_left = np.deg2rad(position_left)
-        follower_position_left = mapper_left.map(radian_left)
+    try:
+        for event in node:
+            if event["type"] == "ERROR":
+                print(f"Dora error occurred: {event['error']}")
+                break
 
-        joystick_x = m5_port.get_joystick_x()
-        joystick_y = m5_port.get_joystick_y()
-        joystick_button = m5_port.get_joystick_button()
+            elif event["type"] == "STOP":
+                print("Received STOP event from dora. Shutting down...")
+                break
 
-        node.send_output("position_right", pa.array(position_right, type=pa.float32()))
-        node.send_output("position_left", pa.array(position_left, type=pa.float32()))
+            if event["type"] != "INPUT":
+                continue
 
-        node.send_output(
-            "follower_position_right",
-            pa.array(follower_position_right, type=pa.float32()),
-        )
-        node.send_output(
-            "follower_position_left",
-            pa.array(follower_position_left, type=pa.float32()),
-        )
+            data = stream.recv()
+            if data is None:
+                continue
 
-        node.send_output("joystick_x", pa.array([joystick_x], type=pa.float32()))
-        node.send_output("joystick_y", pa.array([joystick_y], type=pa.float32()))
-        node.send_output(
-            "joystick_button", pa.array([joystick_button], type=pa.int32())
-        )
+            pos_right, pos_left = processor.process(data["angles"])
 
-    m5_port.cleanup()
+            ts = {"timestamp": time.time_ns()}
+
+            node.send_output(
+                "follower_position_right", pa.array(pos_right, type=pa.float32()), ts
+            )
+            node.send_output(
+                "follower_position_left", pa.array(pos_left, type=pa.float32()), ts
+            )
+
+            # enc_val = data["encoder_value"]
+            # enc_btn = data["encoder_button"]
+            #
+            # node.send_output("encoder_value", pa.array([enc_val], type=pa.int32()), ts)
+            # node.send_output(
+            #     "encoder_button", pa.array([int(enc_btn)], type=pa.int32()), ts
+            # )
+            #
+    except KeyboardInterrupt:
+        pass
+
+    finally:
+        try:
+            print("\nShutting down: Sending STANDBY command...")
+            stream.send_command(CMD_STANDBY)
+            time.sleep(0.1)
+        except Exception:
+            pass
+        stream.close()
+        print("KER Leader Node Disconnected safely.")
 
 
 if __name__ == "__main__":

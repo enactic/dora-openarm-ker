@@ -18,3 +18,13 @@ __pycache__/
 *.tar.gz
 *.zip
 dist/
+ker_data/
+out/
+uv.lock
+# Python bytecode cache
+*.pyc
+*.pyo
+*.pyd
+*.sh
+config/
+tasks/
