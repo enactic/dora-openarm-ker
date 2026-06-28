@@ -15,6 +15,7 @@
 """dora-rs node for leader OpenArm KER."""
 
 import argparse
+import json
 import time
 import dora
 import pyarrow as pa
@@ -141,6 +142,14 @@ def main():
                 break
 
             if event["type"] != "INPUT":
+                continue
+
+            if event["id"] == "request_metadata":
+                node.send_output(
+                    "metadata",
+                    pa.array([json.dumps(stream.metadata)]),
+                    {"timestamp": time.time_ns()},
+                )
                 continue
 
             data = stream.recv()
