@@ -130,11 +130,11 @@ def main():
     processor = KerPoseProcessor(use_hampel=args.hampel)
 
     print("KER Leader Node Running successfully.\n")
-    ### send metadata 
+    ### send metadata
     node.send_output(
         "metadata",
         pa.array([json.dumps(stream.metadata)]),
-        {"timestamp": time.time_ns()}
+        {"timestamp": time.time_ns()},
     )
     try:
         for event in node:
