@@ -15,6 +15,7 @@
 """dora-rs node for leader OpenArm KER."""
 
 import argparse
+import json
 import time
 import dora
 import pyarrow as pa
@@ -129,7 +130,12 @@ def main():
     processor = KerPoseProcessor(use_hampel=args.hampel)
 
     print("KER Leader Node Running successfully.\n")
-
+    ### send metadata
+    node.send_output(
+        "metadata",
+        pa.array([json.dumps(stream.metadata)]),
+        {"timestamp": time.time_ns()},
+    )
     try:
         for event in node:
             if event["type"] == "ERROR":
