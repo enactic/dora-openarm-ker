@@ -25,6 +25,11 @@ from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 QPOS_TYPE = pa.struct([("qpos", pa.list_(pa.float32()))])
 
 
+def qpos_struct(qpos: np.ndarray) -> pa.Array:
+    """Wrap a qpos array as a length-1 StructArray: [{"qpos": [...]}]."""
+    return pa.array([{"qpos": qpos}], type=QPOS_TYPE)
+
+
 # ==============================================================================
 # Filters & Math Utilities
 # ==============================================================================
@@ -161,12 +166,12 @@ def main():
 
             node.send_output(
                 "follower_position_right",
-                pa.array([{"qpos": pos_right}], type=QPOS_TYPE),
+                qpos_struct(np.array(pos_right, dtype=np.float32)),
                 ts,
             )
             node.send_output(
                 "follower_position_left",
-                pa.array([{"qpos": pos_left}], type=QPOS_TYPE),
+                qpos_struct(np.array(pos_left, dtype=np.float32)),
                 ts,
             )
 
