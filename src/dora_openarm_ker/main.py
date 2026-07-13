@@ -166,12 +166,12 @@ def main():
 
             node.send_output(
                 "follower_position_right",
-                qpos_struct(np.array(pos_right, dtype=np.float32)),
+                build_qpos_output(np.array(pos_right, dtype=np.float32)),
                 ts,
             )
             node.send_output(
                 "follower_position_left",
-                qpos_struct(np.array(pos_left, dtype=np.float32)),
+                build_qpos_output(np.array(pos_left, dtype=np.float32)),
                 ts,
             )
 
