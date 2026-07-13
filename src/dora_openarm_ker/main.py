@@ -22,6 +22,13 @@ import pyarrow as pa
 import numpy as np
 from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 
+QPOS_TYPE = pa.struct([("qpos", pa.list_(pa.float32()))])
+
+
+def build_qpos_output(qpos: np.ndarray) -> pa.Array:
+    """Wrap a qpos array as a length-1 StructArray: [{"qpos": [...]}]."""
+    return pa.array([{"qpos": qpos}], type=QPOS_TYPE)
+
 
 # ==============================================================================
 # Filters & Math Utilities
@@ -158,10 +165,14 @@ def main():
             ts = {"timestamp": time.time_ns()}
 
             node.send_output(
-                "follower_position_right", pa.array(pos_right, type=pa.float32()), ts
+                "follower_position_right",
+                build_qpos_output(np.array(pos_right, dtype=np.float32)),
+                ts,
             )
             node.send_output(
-                "follower_position_left", pa.array(pos_left, type=pa.float32()), ts
+                "follower_position_left",
+                build_qpos_output(np.array(pos_left, dtype=np.float32)),
+                ts,
             )
 
             # enc_val = data["encoder_value"]
