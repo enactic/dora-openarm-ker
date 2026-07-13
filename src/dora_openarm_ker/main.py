@@ -25,7 +25,7 @@ from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 QPOS_TYPE = pa.struct([("qpos", pa.list_(pa.float32()))])
 
 
-def qpos_struct(qpos: np.ndarray) -> pa.Array:
+def build_qpos_output(qpos: np.ndarray) -> pa.Array:
     """Wrap a qpos array as a length-1 StructArray: [{"qpos": [...]}]."""
     return pa.array([{"qpos": qpos}], type=QPOS_TYPE)
 
