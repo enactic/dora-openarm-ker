@@ -22,17 +22,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
-    "dora-rs==0.5.0",
-    "dora-rs-cli==0.5.0",
-    "numpy>=2.4.4",
-    "pyarrow>=23.0.1",
-    "scipy>=1.17.1",
-    "openarm-ker @ git+https://github.com/enactic/openarm_ker.git",
+  "dora-rs >= 0.5.0",
+  "numpy>=2.4.4",
+  "pyarrow>=23.0.1",
+  "scipy>=1.17.1",
+  "openarm-ker",
 ]
 
 
 [dependency-groups]
 dev = [
+  "dora-rs-cli>=0.5.0",
   "pytest >= 8.1.1",
   "ruff == 0.14.11", # sync with .pre-commit-config.yaml
 ]
