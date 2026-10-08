@@ -2,6 +2,8 @@
 
 A [dora-rs](https://dora-rs.ai/) node for leader OpenArm KER (Kinematic Equivalent Replica).
 
+This node reads joint angles from OpenArm KER via USB and outputs them as target positions for follower OpenArm arms.
+
 ---
 
 ## Quick Start
@@ -28,18 +30,85 @@ lsusb | grep 303a
 # 303a:4002 should appear
 ```
 
-### 4. Run
+### 4. Use in a dataflow
 
-```bash
-openarm-can-cli can_configure
+Add this node to your dataflow YAML. This node reads a received packet from KER whenever it receives an input, so connect a timer to `tick`. Its outputs can be used as inputs of follower [dora-openarm](https://github.com/enactic/dora-openarm) nodes:
+
+```yaml
+nodes:
+  - id: leader
+    build: pip install dora-openarm-ker
+    path: dora-openarm-ker
+    # args: --hampel
+    inputs:
+      # 250Hz
+      tick: dora/timer/millis/4
+    outputs:
+      - follower_position_left
+      - follower_position_right
+      - metadata
+
+  - id: follower-right
+    build: pip install dora-openarm
+    path: dora-openarm
+    args: "--side right --start-on-startup"
+    inputs:
+      request_state: leader/follower_position_right
+      move_position: leader/follower_position_right
+    outputs:
+      - state
+      - status
+
+  - id: follower-left
+    build: pip install dora-openarm
+    path: dora-openarm
+    args: "--side left --start-on-startup"
+    inputs:
+      request_state: leader/follower_position_left
+      move_position: leader/follower_position_left
+    outputs:
+      - state
+      - status
 ```
 
+Then build and run your dataflow:
+
 ```bash
-uv run dora build config/dataflow-data-collection.yaml --uv
-uv run dora run config/dataflow-data-collection.yaml --uv
+dora build dataflow.yaml --uv
+dora run dataflow.yaml --uv
 ```
+
+See [`dataflow-ker.yaml` in dora-openarm-data-collection](https://github.com/enactic/dora-openarm-data-collection/blob/main/dataflow-ker.yaml) for a complete data collection example with cameras and a recorder.
 
 ---
+
+## Options
+
+| Option     | Description                                                       |
+| ---------- | ----------------------------------------------------------------- |
+| `--hampel` | Enable a Hampel filter that suppresses spikes in encoder values. |
+
+## Inputs
+
+| ID                | Description                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| any (e.g. `tick`) | Each input triggers reading a received packet from KER. Its value is ignored. If no new packet has been received, nothing is output. |
+
+## Outputs
+
+| ID                        | Type                                    | Description                                                                                       |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `metadata`                | `string` (JSON)                         | KER device metadata such as `hw`, `fw` and `updated`. Sent only once on startup.                  |
+| `follower_position_right` | `struct<qpos: list<float32>>`           | Target positions for the right follower arm: 7 joints and 1 gripper (8 values) in radians.       |
+| `follower_position_left`  | `struct<qpos: list<float32>>`           | Target positions for the left follower arm: 7 joints and 1 gripper (8 values) in radians.        |
+
+Each output has a `timestamp` metadata in nanoseconds.
+
+---
+
+## Development
+
+See [dev/README.md](dev/README.md).
 
 ## License
 
