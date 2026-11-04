@@ -20,6 +20,7 @@ import time
 import dora
 import pyarrow as pa
 import numpy as np
+from numpy.typing import ArrayLike
 from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 
 QPOS_TYPE = pa.struct([("qpos", pa.list_(pa.float32()))])
@@ -92,9 +93,17 @@ class OneEuroFilter:
 
     def __init__(self, min_cutoff=5.0, beta=5.0, d_cutoff=5.0):
         """Initialize the filter parameters and empty state."""
+        if min_cutoff <= 0.0 or d_cutoff <= 0.0:
+            raise ValueError("min_cutoff and d_cutoff must be positive")
+        if beta < 0.0:
+            raise ValueError("beta must not be negative")
         self.min_cutoff = min_cutoff
         self.beta = beta
         self.d_cutoff = d_cutoff
+        self.reset()
+
+    def reset(self):
+        """Forget the state; the next sample passes through unfiltered."""
         self.x_prev = None
         self.dx_prev = None
         self.t_prev = None
@@ -104,7 +113,7 @@ class OneEuroFilter:
         tau = 1.0 / (2.0 * np.pi * cutoff)
         return 1.0 / (1.0 + tau / dt)
 
-    def process(self, t: float, values: np.ndarray) -> np.ndarray:
+    def process(self, t: float, values: ArrayLike) -> np.ndarray:
         """Filter one multi-channel sample taken at monotonic time t (seconds)."""
         x = np.asarray(values, dtype=np.float64)
 
@@ -130,6 +139,40 @@ class OneEuroFilter:
         self.dx_prev = dx_hat
         self.t_prev = t
         return x_hat.copy()
+
+
+class FrameClock:
+    """Sample time in seconds from the device frame counter "seq".
+
+    The host sees frames in USB batches through a 2-deep queue polled by the
+    dora timer, so the time a frame is processed can be off from when it was
+    sampled by about a frame period. The counter does not have that jitter.
+    """
+
+    def __init__(self, rate_hz: float):
+        """Initialize the clock for a device streaming at rate_hz."""
+        if rate_hz <= 0.0:
+            raise ValueError("rate_hz must be positive")
+        self.period = 1.0 / rate_hz
+        self.seq_prev = None
+        self.t = 0.0
+
+    def update(self, seq: int) -> tuple[float, bool]:
+        """Return the sample time of seq and whether the counter restarted."""
+        if self.seq_prev is None:
+            self.seq_prev = seq
+            return self.t, False
+
+        gap = (seq - self.seq_prev) & 0xFFFFFFFF
+        self.seq_prev = seq
+        # A huge gap is the counter going back to zero (device restart), the
+        # same rule as KERStream uses for counting lost frames.
+        if gap >= 1 << 31:
+            self.t += self.period
+            return self.t, True
+
+        self.t += gap * self.period
+        return self.t, False
 
 
 # ==============================================================================
@@ -168,7 +211,8 @@ class KerPoseProcessor:
 
         if self.one_euro is not None:
             t = time.perf_counter() if t is None else t
-            # Arm joints only: grippers stay raw for grasp timing.
+            # Arm joints only: grippers stay raw for grasp timing, so they lead
+            # the arm by the filter lag (about 1 / (2 * pi * cutoff)).
             smoothed = self.one_euro.process(t, pos_right[:7] + pos_left[:7]).tolist()
             pos_right = smoothed[:7] + pos_right[7:]
             pos_left = smoothed[7:] + pos_left[7:]
@@ -179,6 +223,26 @@ class KerPoseProcessor:
 # ==============================================================================
 # Main Node App
 # ==============================================================================
+ONE_EURO_DEFAULTS = {"min_cutoff": 5.0, "beta": 5.0, "d_cutoff": 5.0}
+DEFAULT_KER_RATE_HZ = 1000.0
+
+
+def positive_float(value: str) -> float:
+    """Parse a float that must be > 0."""
+    x = float(value)
+    if x <= 0.0:
+        raise argparse.ArgumentTypeError(f"must be positive: {value}")
+    return x
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a float that must be >= 0."""
+    x = float(value)
+    if x < 0.0:
+        raise argparse.ArgumentTypeError(f"must not be negative: {value}")
+    return x
+
+
 def main():
     """Act OpenArm KER as a leader of OpenArm."""
     parser = argparse.ArgumentParser()
@@ -188,25 +252,41 @@ def main():
     )
     parser.add_argument(
         "--min-cutoff",
-        type=float,
-        default=5.0,
+        type=positive_float,
         help="1 Euro cutoff in Hz at rest; higher = less lag, more jitter "
-        "(default: 5.0).",
+        f"(default: {ONE_EURO_DEFAULTS['min_cutoff']}).",
     )
     parser.add_argument(
         "--beta",
-        type=float,
-        default=5.0,
+        type=non_negative_float,
         help="1 Euro cutoff increase in Hz per rad/s; higher = less lag "
-        "when moving (default: 5.0).",
+        f"when moving (default: {ONE_EURO_DEFAULTS['beta']}).",
     )
     parser.add_argument(
         "--d-cutoff",
-        type=float,
-        default=5.0,
-        help="1 Euro cutoff in Hz for the velocity estimate (default: 5.0).",
+        type=positive_float,
+        help="1 Euro cutoff in Hz for the velocity estimate "
+        f"(default: {ONE_EURO_DEFAULTS['d_cutoff']}).",
+    )
+    parser.add_argument(
+        "--ker-rate-hz",
+        type=positive_float,
+        default=DEFAULT_KER_RATE_HZ,
+        help="KER streaming rate, used to turn the frame counter into sample "
+        f"time for the 1 Euro filter (default: {DEFAULT_KER_RATE_HZ}).",
     )
     args = parser.parse_args()
+
+    one_euro_args = {
+        key: getattr(args, key)
+        for key in ONE_EURO_DEFAULTS
+        if getattr(args, key) is not None
+    }
+    if one_euro_args and not args.one_euro:
+        print(
+            "[Warning] 1 Euro filter options are ignored without --one-euro: "
+            + ", ".join(one_euro_args)
+        )
 
     print("Connecting to KER device...")
     stream = KERStream()
@@ -222,12 +302,11 @@ def main():
     print("Initializing dora-rs node...")
     node = dora.Node()
     one_euro = (
-        OneEuroFilter(
-            min_cutoff=args.min_cutoff, beta=args.beta, d_cutoff=args.d_cutoff
-        )
+        OneEuroFilter(**{**ONE_EURO_DEFAULTS, **one_euro_args})
         if args.one_euro
         else None
     )
+    clock = FrameClock(args.ker_rate_hz)
     processor = KerPoseProcessor(use_hampel=args.hampel, one_euro=one_euro)
 
     print("KER Leader Node Running successfully.\n")
@@ -254,7 +333,14 @@ def main():
             if data is None:
                 continue
 
-            pos_right, pos_left = processor.process(data["angles"])
+            t = None
+            if one_euro is not None and "seq" in data:
+                t, restarted = clock.update(data["seq"])
+                if restarted:
+                    print("[KER Filter] Frame counter restarted, resetting 1 Euro")
+                    one_euro.reset()
+
+            pos_right, pos_left = processor.process(data["angles"], t=t)
 
             ts = {"timestamp": time.time_ns()}
 

@@ -45,3 +45,6 @@ extend-select = [
   "D",   # pydocstyle
   "UP"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

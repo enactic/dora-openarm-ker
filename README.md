@@ -39,7 +39,7 @@ nodes:
   - id: leader
     build: pip install dora-openarm-ker
     path: dora-openarm-ker
-    # args: --hampel
+    # args: --hampel --one-euro
     inputs:
       # 250Hz
       tick: dora/timer/millis/4
@@ -84,9 +84,20 @@ See [`dataflow-ker.yaml` in dora-openarm-data-collection](https://github.com/ena
 
 ## Options
 
-| Option     | Description                                                       |
-| ---------- | ----------------------------------------------------------------- |
-| `--hampel` | Enable a Hampel filter that suppresses spikes in encoder values. |
+| Option               | Description                                                                                                                  |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `--hampel`           | Enable a Hampel filter that suppresses spikes in encoder values.                                                             |
+| `--one-euro`         | Enable a [1 Euro filter](https://gery.casiez.net/1euro/) that smooths arm joint jitter. Grippers are not filtered.           |
+| `--min-cutoff <Hz>`  | 1 Euro cutoff at rest. Higher means less lag and more jitter. Default: `5.0`.                                                |
+| `--beta <Hz/(rad/s)>`| How much the cutoff rises with joint speed. Higher means less lag while moving. Default: `5.0`.                              |
+| `--d-cutoff <Hz>`    | 1 Euro cutoff for the velocity estimate. Default: `5.0`.                                                                     |
+| `--ker-rate-hz <Hz>` | KER streaming rate, used to turn the device frame counter into sample time for the 1 Euro filter. Default: `1000`.          |
+
+The 1 Euro options take effect only with `--one-euro`. The Hampel filter runs first, so spikes are removed before smoothing.
+
+The 1 Euro filter delays arm joints by roughly `1 / (2π · cutoff)`: about 30 ms at rest with the defaults, about 10 ms at 2 rad/s. Grippers are not delayed, so in recorded data they lead the arm by that amount.
+
+To tune, start with `--beta 0` and lower `--min-cutoff` until jitter at rest is gone, then raise `--beta` until fast motion no longer lags.
 
 ## Inputs
 
