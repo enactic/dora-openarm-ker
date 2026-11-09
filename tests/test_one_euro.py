@@ -17,7 +17,7 @@
 import numpy as np
 import pytest
 
-from dora_openarm_ker.main import FrameClock, KerPoseProcessor, OneEuroFilter
+from dora_openarm_ker.main import DeviceClock, KerPoseProcessor, OneEuroFilter
 
 DT = 0.004
 
@@ -81,31 +81,35 @@ def test_invalid_parameters_are_rejected(kwargs):
         OneEuroFilter(**kwargs)
 
 
-def test_frame_clock_follows_counter():
-    """Sample time advances by the frame gap, not by wall time."""
-    clock = FrameClock(1000.0)
-    assert clock.update(10) == (0.0, False)
-    t, restarted = clock.update(14)
-    assert t == pytest.approx(0.004)
+def test_device_clock_follows_timestamp():
+    """Sample time is the device timestamp gap in seconds, not wall time."""
+    clock = DeviceClock()
+    assert clock.update(10_000) == (0.0, False)
+    t, restarted = clock.update(14_250)
+    assert t == pytest.approx(0.00425)
     assert not restarted
 
 
-def test_frame_clock_unwraps_uint32():
-    """Wrapping past 2**32 counts as a small forward gap."""
-    clock = FrameClock(1000.0)
+def test_device_clock_unwraps_uint32():
+    """micros() wrapping past 2**32 counts as a small forward gap."""
+    clock = DeviceClock()
     clock.update(0xFFFFFFFE)
     t, restarted = clock.update(2)
-    assert t == pytest.approx(0.004)
+    assert t == pytest.approx(4e-6)
     assert not restarted
 
 
-def test_frame_clock_detects_restart():
-    """A counter going back to zero is reported as a restart."""
-    clock = FrameClock(1000.0)
-    clock.update(5000)
-    t, restarted = clock.update(0)
+def test_device_clock_detects_restart():
+    """A timestamp going backwards is reported as a restart."""
+    clock = DeviceClock()
+    clock.update(5_000_000)
+    t1, _ = clock.update(5_001_000)
+    t2, restarted = clock.update(1_000)
     assert restarted
-    assert t > 0.0
+    assert t2 == t1
+    t3, restarted = clock.update(2_000)
+    assert not restarted
+    assert t3 == pytest.approx(t1 + 0.001)
 
 
 def test_processor_leaves_grippers_unfiltered():

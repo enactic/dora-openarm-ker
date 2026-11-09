@@ -141,37 +141,36 @@ class OneEuroFilter:
         return x_hat.copy()
 
 
-class FrameClock:
-    """Sample time in seconds from the device frame counter "seq".
+class DeviceClock:
+    """Sample time in seconds from the device "timestamp" field.
 
-    The host sees frames in USB batches through a 2-deep queue polled by the
-    dora timer, so the time a frame is processed can be off from when it was
-    sampled by about a frame period. The counter does not have that jitter.
+    The firmware stamps each sample with micros() when it is acquired. This
+    gives the real interval between samples, even when the device drops a
+    sample before sending it, and does not depend on the nominal rate. It also
+    avoids the jitter of the host side: frames arrive in USB batches through a
+    2-deep queue polled by the dora timer.
     """
 
-    def __init__(self, rate_hz: float):
-        """Initialize the clock for a device streaming at rate_hz."""
-        if rate_hz <= 0.0:
-            raise ValueError("rate_hz must be positive")
-        self.period = 1.0 / rate_hz
-        self.seq_prev = None
+    def __init__(self):
+        """Initialize the clock; the first sample is at time 0."""
+        self.us_prev = None
         self.t = 0.0
 
-    def update(self, seq: int) -> tuple[float, bool]:
-        """Return the sample time of seq and whether the counter restarted."""
-        if self.seq_prev is None:
-            self.seq_prev = seq
+    def update(self, timestamp_us: int) -> tuple[float, bool]:
+        """Return the sample time of timestamp_us and whether the device restarted."""
+        if self.us_prev is None:
+            self.us_prev = timestamp_us
             return self.t, False
 
-        gap = (seq - self.seq_prev) & 0xFFFFFFFF
-        self.seq_prev = seq
-        # A huge gap is the counter going back to zero (device restart), the
-        # same rule as KERStream uses for counting lost frames.
+        gap = (timestamp_us - self.us_prev) & 0xFFFFFFFF
+        self.us_prev = timestamp_us
+        # micros() wraps every ~71.6 min, which the mask handles. A huge gap is
+        # the timestamp going backwards (device restart): keep the time and let
+        # the caller reset the filter.
         if gap >= 1 << 31:
-            self.t += self.period
             return self.t, True
 
-        self.t += gap * self.period
+        self.t += gap * 1e-6
         return self.t, False
 
 
@@ -224,7 +223,6 @@ class KerPoseProcessor:
 # Main Node App
 # ==============================================================================
 ONE_EURO_DEFAULTS = {"min_cutoff": 5.0, "beta": 5.0, "d_cutoff": 5.0}
-DEFAULT_KER_RATE_HZ = 1000.0
 
 
 def positive_float(value: str) -> float:
@@ -268,13 +266,6 @@ def main():
         help="1 Euro cutoff in Hz for the velocity estimate "
         f"(default: {ONE_EURO_DEFAULTS['d_cutoff']}).",
     )
-    parser.add_argument(
-        "--ker-rate-hz",
-        type=positive_float,
-        default=DEFAULT_KER_RATE_HZ,
-        help="KER streaming rate, used to turn the frame counter into sample "
-        f"time for the 1 Euro filter (default: {DEFAULT_KER_RATE_HZ}).",
-    )
     args = parser.parse_args()
 
     one_euro_args = {
@@ -306,7 +297,7 @@ def main():
         if args.one_euro
         else None
     )
-    clock = FrameClock(args.ker_rate_hz)
+    clock = DeviceClock()
     processor = KerPoseProcessor(use_hampel=args.hampel, one_euro=one_euro)
 
     print("KER Leader Node Running successfully.\n")
@@ -334,10 +325,10 @@ def main():
                 continue
 
             t = None
-            if one_euro is not None and "seq" in data:
-                t, restarted = clock.update(data["seq"])
+            if one_euro is not None and "timestamp" in data:
+                t, restarted = clock.update(data["timestamp"])
                 if restarted:
-                    print("[KER Filter] Frame counter restarted, resetting 1 Euro")
+                    print("[KER Filter] Device timestamp restarted, resetting 1 Euro")
                     one_euro.reset()
 
             pos_right, pos_left = processor.process(data["angles"], t=t)

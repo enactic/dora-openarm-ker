@@ -91,7 +91,6 @@ See [`dataflow-ker.yaml` in dora-openarm-data-collection](https://github.com/ena
 | `--min-cutoff <Hz>`  | 1 Euro cutoff at rest. Higher means less lag and more jitter. Default: `5.0`.                                                |
 | `--beta <Hz/(rad/s)>`| How much the cutoff rises with joint speed. Higher means less lag while moving. Default: `5.0`.                              |
 | `--d-cutoff <Hz>`    | 1 Euro cutoff for the velocity estimate. Default: `5.0`.                                                                     |
-| `--ker-rate-hz <Hz>` | KER streaming rate, used to turn the device frame counter into sample time for the 1 Euro filter. Default: `1000`.          |
 
 The 1 Euro options take effect only with `--one-euro`. The Hampel filter runs first, so spikes are removed before smoothing.
 
