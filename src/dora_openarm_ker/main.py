@@ -20,6 +20,7 @@ import time
 import dora
 import pyarrow as pa
 import numpy as np
+from numpy.typing import ArrayLike
 from openarm_ker.ker_stream import KERStream, CMD_STANDBY, CMD_STREAM
 
 QPOS_TYPE = pa.struct([("qpos", pa.list_(pa.float32()))])
@@ -82,21 +83,119 @@ class OnlineHampelFilter:
         return filtered_values.tolist()
 
 
+class OneEuroFilter:
+    """Per-channel 1 Euro Filter: smooths jitter at rest, follows fast motion.
+
+    The cutoff frequency rises with the filtered speed:
+    cutoff = min_cutoff + beta * |velocity|. Units follow the input
+    (here rad and rad/s).
+    """
+
+    def __init__(self, min_cutoff=5.0, beta=5.0, d_cutoff=5.0):
+        """Initialize the filter parameters and empty state."""
+        if min_cutoff <= 0.0 or d_cutoff <= 0.0:
+            raise ValueError("min_cutoff and d_cutoff must be positive")
+        if beta < 0.0:
+            raise ValueError("beta must not be negative")
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.reset()
+
+    def reset(self):
+        """Forget the state; the next sample passes through unfiltered."""
+        self.x_prev = None
+        self.dx_prev = None
+        self.t_prev = None
+
+    @staticmethod
+    def _alpha(dt, cutoff):
+        tau = 1.0 / (2.0 * np.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def process(self, t: float, values: ArrayLike) -> np.ndarray:
+        """Filter one multi-channel sample taken at monotonic time t (seconds)."""
+        x = np.asarray(values, dtype=np.float64)
+
+        if self.t_prev is None:
+            self.x_prev = x.copy()
+            self.dx_prev = np.zeros_like(x)
+            self.t_prev = t
+            return x
+
+        dt = t - self.t_prev
+        if dt <= 0.0:
+            return self.x_prev.copy()
+
+        dx = (x - self.x_prev) / dt
+        alpha_d = self._alpha(dt, self.d_cutoff)
+        dx_hat = alpha_d * dx + (1.0 - alpha_d) * self.dx_prev
+
+        cutoff = self.min_cutoff + self.beta * np.abs(dx_hat)
+        alpha = self._alpha(dt, cutoff)
+        x_hat = alpha * x + (1.0 - alpha) * self.x_prev
+
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        self.t_prev = t
+        return x_hat.copy()
+
+
+class DeviceClock:
+    """Sample time in seconds from the device "timestamp" field.
+
+    The firmware stamps each sample with micros() when it is acquired. This
+    gives the real interval between samples, even when the device drops a
+    sample before sending it, and does not depend on the nominal rate. It also
+    avoids the jitter of the host side: frames arrive in USB batches through a
+    2-deep queue polled by the dora timer.
+    """
+
+    def __init__(self):
+        """Initialize the clock; the first sample is at time 0."""
+        self.us_prev = None
+        self.t = 0.0
+
+    def update(self, timestamp_us: int) -> tuple[float, bool]:
+        """Return the sample time of timestamp_us and whether the device restarted."""
+        if self.us_prev is None:
+            self.us_prev = timestamp_us
+            return self.t, False
+
+        gap = (timestamp_us - self.us_prev) & 0xFFFFFFFF
+        self.us_prev = timestamp_us
+        # micros() wraps every ~71.6 min, which the mask handles. A huge gap is
+        # the timestamp going backwards (device restart): keep the time and let
+        # the caller reset the filter.
+        if gap >= 1 << 31:
+            return self.t, True
+
+        self.t += gap * 1e-6
+        return self.t, False
+
+
 # ==============================================================================
 # Core Processor
 # ==============================================================================
 class KerPoseProcessor:
     """Processes raw angles and applies filters without modifying the physical scale."""
 
-    def __init__(self, use_hampel: bool = False):
-        """Initialize the pose processor with an optional Hampel filter."""
+    def __init__(
+        self,
+        use_hampel: bool = False,
+        one_euro: OneEuroFilter | None = None,
+    ):
+        """Initialize the pose processor with optional Hampel and 1 Euro filters."""
         self.hampel = (
             OnlineHampelFilter(window_size=5, n_sigmas=3.0, min_threshold=5.0)
             if use_hampel
             else None
         )
+        self.one_euro = one_euro
 
-    def process(self, raw_angles: list[float]) -> tuple[list[float], list[float]]:
+    def process(
+        self, raw_angles: list[float], t: float | None = None
+    ) -> tuple[list[float], list[float]]:
         """Filter raw encoder degrees and transform them into left/right radian lists."""
         filtered = self.hampel.process(raw_angles) if self.hampel else raw_angles
 
@@ -109,17 +208,76 @@ class KerPoseProcessor:
         pos_left = np.deg2rad(filtered[8:15]).tolist()
         pos_left.append(np.deg2rad(grip_l_deg))
 
+        if self.one_euro is not None:
+            t = time.perf_counter() if t is None else t
+            # Arm joints only: grippers stay raw for grasp timing, so they lead
+            # the arm by the filter lag (about 1 / (2 * pi * cutoff)).
+            smoothed = self.one_euro.process(t, pos_right[:7] + pos_left[:7]).tolist()
+            pos_right = smoothed[:7] + pos_right[7:]
+            pos_left = smoothed[7:] + pos_left[7:]
+
         return pos_right, pos_left
 
 
 # ==============================================================================
 # Main Node App
 # ==============================================================================
+ONE_EURO_DEFAULTS = {"min_cutoff": 5.0, "beta": 5.0, "d_cutoff": 5.0}
+
+
+def positive_float(value: str) -> float:
+    """Parse a float that must be > 0."""
+    x = float(value)
+    if x <= 0.0:
+        raise argparse.ArgumentTypeError(f"must be positive: {value}")
+    return x
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a float that must be >= 0."""
+    x = float(value)
+    if x < 0.0:
+        raise argparse.ArgumentTypeError(f"must not be negative: {value}")
+    return x
+
+
 def main():
     """Act OpenArm KER as a leader of OpenArm."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--hampel", action="store_true", help="Enable Hampel filter")
+    parser.add_argument(
+        "--one-euro", action="store_true", help="Enable 1 Euro filter on joints"
+    )
+    parser.add_argument(
+        "--min-cutoff",
+        type=positive_float,
+        help="1 Euro cutoff in Hz at rest; higher = less lag, more jitter "
+        f"(default: {ONE_EURO_DEFAULTS['min_cutoff']}).",
+    )
+    parser.add_argument(
+        "--beta",
+        type=non_negative_float,
+        help="1 Euro cutoff increase in Hz per rad/s; higher = less lag "
+        f"when moving (default: {ONE_EURO_DEFAULTS['beta']}).",
+    )
+    parser.add_argument(
+        "--d-cutoff",
+        type=positive_float,
+        help="1 Euro cutoff in Hz for the velocity estimate "
+        f"(default: {ONE_EURO_DEFAULTS['d_cutoff']}).",
+    )
     args = parser.parse_args()
+
+    one_euro_args = {
+        key: getattr(args, key)
+        for key in ONE_EURO_DEFAULTS
+        if getattr(args, key) is not None
+    }
+    if one_euro_args and not args.one_euro:
+        print(
+            "[Warning] 1 Euro filter options are ignored without --one-euro: "
+            + ", ".join(one_euro_args)
+        )
 
     print("Connecting to KER device...")
     stream = KERStream()
@@ -134,7 +292,13 @@ def main():
 
     print("Initializing dora-rs node...")
     node = dora.Node()
-    processor = KerPoseProcessor(use_hampel=args.hampel)
+    one_euro = (
+        OneEuroFilter(**{**ONE_EURO_DEFAULTS, **one_euro_args})
+        if args.one_euro
+        else None
+    )
+    clock = DeviceClock()
+    processor = KerPoseProcessor(use_hampel=args.hampel, one_euro=one_euro)
 
     print("KER Leader Node Running successfully.\n")
     ### send metadata
@@ -160,7 +324,14 @@ def main():
             if data is None:
                 continue
 
-            pos_right, pos_left = processor.process(data["angles"])
+            t = None
+            if one_euro is not None and "timestamp" in data:
+                t, restarted = clock.update(data["timestamp"])
+                if restarted:
+                    print("[KER Filter] Device timestamp restarted, resetting 1 Euro")
+                    one_euro.reset()
+
+            pos_right, pos_left = processor.process(data["angles"], t=t)
 
             ts = {"timestamp": time.time_ns()}
 
